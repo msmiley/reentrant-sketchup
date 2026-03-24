@@ -69,6 +69,39 @@ module ReentrantSketchup
       puts "Scaled #{selection.count} entities by factor #{factor}"
     end
 
+    # Level selected groups/components by removing rotation from their
+    # transformations, as if each was set flat on a table.
+    def self.level_selection
+      model = Sketchup.active_model
+      selection = model.selection
+      instances = selection.grep(Sketchup::ComponentInstance) +
+                  selection.grep(Sketchup::Group)
+      return puts('No groups or components selected') if instances.empty?
+
+      model.start_operation('Level Selection', true)
+      count = 0
+      instances.each do |inst|
+        tr = inst.transformation
+        # Extract the current scale from each axis column
+        x_axis = Geom::Vector3d.new(tr.to_a[0..2])
+        y_axis = Geom::Vector3d.new(tr.to_a[4..6])
+        z_axis = Geom::Vector3d.new(tr.to_a[8..10])
+        sx = x_axis.length
+        sy = y_axis.length
+        sz = z_axis.length
+
+        # Build a new transformation with the same origin and scale but no rotation
+        origin = tr.origin
+        new_tr = Geom::Transformation.scaling(origin, sx, sy, sz)
+        new_tr = Geom::Transformation.translation(origin.to_a) * Geom::Transformation.scaling(sx, sy, sz)
+
+        inst.transformation = new_tr
+        count += 1
+      end
+      model.commit_operation
+      puts "Leveled #{count} instance(s)"
+    end
+
     # Reverse faces so normals point outward (away from origin of bounding box).
     def self.orient_faces
       model = Sketchup.active_model

@@ -31,6 +31,7 @@ module ReentrantSketchup
     geo_menu.add_item('Total Edge Length') { GeometryTools.total_edge_length }
     geo_menu.add_item('Selection Bounds') { GeometryTools.selection_bounds }
     geo_menu.add_item('Orient Faces') { GeometryTools.orient_faces }
+    geo_menu.add_item('Level Selection') { GeometryTools.level_selection }
 
     mat_menu = tools_sub.add_submenu('Materials')
     mat_menu.add_item('Purge Unused Materials') { MaterialTools.purge_unused_materials }
