@@ -15,7 +15,9 @@ module ReentrantSketchup
       selection = model.selection
       return UI.beep if selection.empty?
 
-      center = model.selection_bounds.center
+      bounds = Geom::BoundingBox.new
+      selection.each { |e| bounds.add(e.bounds) }
+      center = bounds.center
       rotation = Geom::Transformation.rotation(center, axis_vector, 90.degrees)
 
       model.start_operation('Rotate 90°', true)
