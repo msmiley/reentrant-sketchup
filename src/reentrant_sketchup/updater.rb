@@ -20,43 +20,41 @@ module ReentrantSketchup
     end
 
     # Check GitHub for the latest release. Downloads and installs if newer.
+    # All network I/O runs inline (called from a UI.start_timer callback)
+    # so that SketchUp API calls stay on the main thread.
     # @param notify_if_current [Boolean] show a dialog even when up to date
     def check_for_update(notify_if_current: false)
-      Thread.new do
-        begin
-          uri = URI.parse(RELEASES_URL)
-          http = Net::HTTP.new(uri.host, uri.port)
-          http.use_ssl = true
-          http.open_timeout = 10
-          http.read_timeout = 10
+      uri = URI.parse(RELEASES_URL)
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = true
+      http.open_timeout = 10
+      http.read_timeout = 10
 
-          request = Net::HTTP::Get.new(uri.request_uri)
-          request['Accept'] = 'application/vnd.github.v3+json'
-          request['User-Agent'] = "#{PLUGIN_NAME}/#{PLUGIN_VERSION}"
+      request = Net::HTTP::Get.new(uri.request_uri)
+      request['Accept'] = 'application/vnd.github.v3+json'
+      request['User-Agent'] = "#{PLUGIN_NAME}/#{PLUGIN_VERSION}"
 
-          response = http.request(request)
-          return unless response.is_a?(Net::HTTPSuccess)
+      response = http.request(request)
+      return unless response.is_a?(Net::HTTPSuccess)
 
-          release = JSON.parse(response.body)
-          latest_tag = release['tag_name'].to_s.sub(/^v/, '')
+      release = JSON.parse(response.body)
+      latest_tag = release['tag_name'].to_s.sub(/^v/, '')
 
-          if compare_versions(latest_tag, PLUGIN_VERSION) > 0
-            rbz_asset = release['assets']&.find { |a| a['name'].end_with?('.rbz') }
-            if rbz_asset
-              prompt_update(latest_tag, rbz_asset['browser_download_url'])
-            else
-              UI.messagebox(
-                "#{PLUGIN_NAME} v#{latest_tag} is available but has no .rbz download.\n" \
-                "Visit the GitHub releases page to update manually."
-              )
-            end
-          elsif notify_if_current
-            UI.messagebox("#{PLUGIN_NAME} v#{PLUGIN_VERSION} is up to date.")
-          end
-        rescue StandardError => e
-          UI.messagebox("Update check failed: #{e.message}") if notify_if_current
+      if compare_versions(latest_tag, PLUGIN_VERSION) > 0
+        rbz_asset = release['assets']&.find { |a| a['name'].end_with?('.rbz') }
+        if rbz_asset
+          prompt_update(latest_tag, rbz_asset['browser_download_url'])
+        else
+          UI.messagebox(
+            "#{PLUGIN_NAME} v#{latest_tag} is available but has no .rbz download.\n" \
+            "Visit the GitHub releases page to update manually."
+          )
         end
+      elsif notify_if_current
+        UI.messagebox("#{PLUGIN_NAME} v#{PLUGIN_VERSION} is up to date.")
       end
+    rescue StandardError => e
+      UI.messagebox("Update check failed: #{e.message}") if notify_if_current
     end
 
     # Prompt user then download and install the .rbz
