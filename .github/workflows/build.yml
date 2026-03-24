@@ -3,6 +3,7 @@ name: Build Extension
 on:
   push:
     branches: ['**']
+    tags: ['v*']
 
 jobs:
   build:
@@ -18,3 +19,10 @@ jobs:
         with:
           name: reentrant-sketchup-rbz
           path: dist/*.rbz
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.rbz
+          generate_release_notes: true
