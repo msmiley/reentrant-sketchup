@@ -27,6 +27,8 @@ module ReentrantSketchup
     grp_menu.add_item('Group to Component') { GroupTools.group_to_component }
     grp_menu.add_item('Lock Selection') { GroupTools.lock_selection }
     grp_menu.add_item('Unlock Selection') { GroupTools.unlock_selection }
+    grp_menu.add_item('Make Unique Each') { GroupTools.make_unique_each }
+    grp_menu.add_item('Trim Multiple') { GroupTools.trim_multiple }
     grp_menu.add_item('Purge Empty Groups') { GroupTools.purge_empty_groups }
 
     # -- Layers/Tags --

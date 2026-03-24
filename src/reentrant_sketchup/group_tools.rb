@@ -73,6 +73,52 @@ module ReentrantSketchup
       puts "Unlocked #{lockable.length} entities"
     end
 
+    # Make each selected component instance unique independently.
+    # Unlike the native Make Unique which gives all selected instances a single
+    # new shared definition, this creates a separate unique definition for each.
+    def self.make_unique_each
+      model = Sketchup.active_model
+      components = model.selection.grep(Sketchup::ComponentInstance)
+      return puts('No component instances selected') if components.empty?
+
+      model.start_operation('Make Unique Each', true)
+      components.each(&:make_unique)
+      model.commit_operation
+      puts "Made #{components.length} components independently unique"
+    end
+
+    # Trim multiple selected solids using the first selected solid as the
+    # cutting tool. The cutting tool is preserved; the intersecting volume is
+    # removed from every other selected solid.
+    # Requires SketchUp Pro (Solid Tools).
+    def self.trim_multiple
+      model = Sketchup.active_model
+      solids = model.selection.select do |e|
+        (e.is_a?(Sketchup::Group) || e.is_a?(Sketchup::ComponentInstance)) &&
+          e.manifold?
+      end
+
+      if solids.length < 2
+        return puts('Select at least 2 solid groups/components (first = cutter)')
+      end
+
+      cutter = solids.first
+      targets = solids[1..]
+
+      model.start_operation('Trim Multiple', true)
+      trimmed = 0
+      targets.each do |target|
+        begin
+          target.trim(cutter)
+          trimmed += 1
+        rescue ArgumentError => e
+          puts "Skipping #{target}: #{e.message}"
+        end
+      end
+      model.commit_operation
+      puts "Trimmed #{trimmed} solids with '#{cutter.name}'"
+    end
+
     # Remove all empty groups and component instances from the model.
     def self.purge_empty_groups
       model = Sketchup.active_model
