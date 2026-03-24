@@ -102,6 +102,61 @@ module ReentrantSketchup
       puts "Leveled #{count} instance(s)"
     end
 
+    # Push/pull a selected face so the total extrusion depth equals a target
+    # length. SketchUp's native Push/Pull only accepts relative distances;
+    # this tool measures the current depth and applies the delta.
+    def self.pull_to_length
+      model = Sketchup.active_model
+      faces = model.selection.grep(Sketchup::Face)
+      return UI.messagebox('Select a single face to pull to length.') unless faces.length == 1
+
+      face = faces.first
+      normal = face.normal
+
+      # Find the opposing parallel face: same parent, reverse normal, sharing
+      # no vertices with the selected face.
+      face_verts = face.vertices
+      opposite = face.parent.entities.grep(Sketchup::Face).find do |f|
+        next if f == face
+
+        f.normal.parallel?(normal) && (f.vertices & face_verts).empty?
+      end
+
+      if opposite
+        # Current depth is the distance between face planes along the normal.
+        current_depth = (face.plane.last - opposite.plane.last).abs
+        # Normalise for non-unit normals (plane eq is [a,b,c,d] where
+        # a²+b²+c² is already 1 for SketchUp faces, but be safe).
+        current_depth /= normal.length if normal.length != 1.0
+        formatted = Sketchup.format_length(current_depth)
+      else
+        current_depth = nil
+        formatted = '(no opposite face found)'
+      end
+
+      prompts = ['Target length:']
+      defaults = [formatted]
+      title = 'Pull to Length'
+      result = UI.inputbox(prompts, defaults, title)
+      return unless result
+
+      target = result[0].to_l
+      if current_depth.nil?
+        # Without an opposite face, treat the target as a raw pushpull distance.
+        delta = target
+      else
+        delta = target - current_depth
+      end
+
+      return puts('Already at target length.') if delta.abs < 0.0001
+
+      model.start_operation('Pull to Length', true)
+      # pushpull positive = extrude along face normal, negative = retract.
+      face.pushpull(delta)
+      model.commit_operation
+      puts "Pulled face to #{Sketchup.format_length(target)} (delta: #{Sketchup.format_length(delta)})"
+    end
+
     # Reverse faces so normals point outward (away from origin of bounding box).
     def self.orient_faces
       model = Sketchup.active_model
