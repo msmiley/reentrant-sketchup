@@ -6,6 +6,7 @@ require_relative 'group_tools'
 require_relative 'layer_tools'
 require_relative 'material_tools'
 require_relative 'camera_tools'
+require_relative 'rotation_tools'
 require_relative 'updater'
 require_relative 'menu'
 

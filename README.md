@@ -70,10 +70,14 @@ ReentrantSketchup::MaterialTools.select_by_material('Brick')
 | Command | Description |
 |---------|-------------|
 | Zoom Selection | Zoom camera to fit the current selection |
-| Zoom Extents | Zoom camera to fit all model entities |
-| Top View | Switch to orthographic top-down view |
-| Front View | Switch to orthographic front view |
-| Toggle Perspective | Switch between perspective and parallel projection |
+
+### Rotation Tools (Context Menu)
+Right-click any selection to access **Rotate 90°**:
+| Command | Description |
+|---------|-------------|
+| Red Axis (X) | Rotate selection 90° around the X axis |
+| Green Axis (Y) | Rotate selection 90° around the Y axis |
+| Blue Axis (Z) | Rotate selection 90° around the Z axis |
 
 ## Ruby Console Usage
 
@@ -83,7 +87,7 @@ All tools are accessible from the SketchUp Ruby Console:
 ReentrantSketchup::SelectionTools.select_all_faces
 ReentrantSketchup::GeometryTools.total_face_area
 ReentrantSketchup::GroupTools.group_selection
-ReentrantSketchup::CameraTools.top_view
+ReentrantSketchup::CameraTools.zoom_selection
 ```
 
 ## License
