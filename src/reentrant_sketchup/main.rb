@@ -11,4 +11,7 @@ require_relative 'menu'
 
 module ReentrantSketchup
   Sketchup.status_text = "#{PLUGIN_NAME} v#{PLUGIN_VERSION} loaded"
+
+  # Silently check for updates on startup
+  Updater.check_for_update(notify_if_current: false)
 end
