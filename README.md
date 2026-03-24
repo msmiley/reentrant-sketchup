@@ -70,10 +70,6 @@ ReentrantSketchup::MaterialTools.select_by_material('Brick')
 | Command | Description |
 |---------|-------------|
 | Zoom Selection | Zoom camera to fit the current selection |
-| Zoom Extents | Zoom camera to fit all model entities |
-| Top View | Switch to orthographic top-down view |
-| Front View | Switch to orthographic front view |
-| Toggle Perspective | Switch between perspective and parallel projection |
 
 ## Ruby Console Usage
 
@@ -83,7 +79,7 @@ All tools are accessible from the SketchUp Ruby Console:
 ReentrantSketchup::SelectionTools.select_all_faces
 ReentrantSketchup::GeometryTools.total_face_area
 ReentrantSketchup::GroupTools.group_selection
-ReentrantSketchup::CameraTools.top_view
+ReentrantSketchup::CameraTools.zoom_selection
 ```
 
 ## License

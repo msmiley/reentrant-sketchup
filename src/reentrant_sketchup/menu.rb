@@ -45,10 +45,6 @@ module ReentrantSketchup
     # -- Camera menu: View operations --
     cam_sub = UI.menu('Camera').add_submenu(PLUGIN_NAME)
     cam_sub.add_item('Zoom Selection') { CameraTools.zoom_selection }
-    cam_sub.add_item('Zoom Extents') { CameraTools.zoom_extents }
-    cam_sub.add_item('Top View') { CameraTools.top_view }
-    cam_sub.add_item('Front View') { CameraTools.front_view }
-    cam_sub.add_item('Toggle Perspective') { CameraTools.toggle_perspective }
 
     # -- Extensions menu: Update check --
     ext_menu = UI.menu('Plugins').add_submenu(PLUGIN_NAME)
