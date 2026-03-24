@@ -35,7 +35,10 @@ module ReentrantSketchup
       request['User-Agent'] = "#{PLUGIN_NAME}/#{PLUGIN_VERSION}"
 
       response = http.request(request)
-      return unless response.is_a?(Net::HTTPSuccess)
+      unless response.is_a?(Net::HTTPSuccess)
+        UI.messagebox("Update check failed (HTTP #{response.code}).") if notify_if_current
+        return
+      end
 
       release = JSON.parse(response.body)
       latest_tag = release['tag_name'].to_s.sub(/^v/, '')
