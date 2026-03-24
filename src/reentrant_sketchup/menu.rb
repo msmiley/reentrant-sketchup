@@ -32,6 +32,7 @@ module ReentrantSketchup
     geo_menu.add_item('Selection Bounds') { GeometryTools.selection_bounds }
     geo_menu.add_item('Orient Faces') { GeometryTools.orient_faces }
     geo_menu.add_item('Level Selection') { GeometryTools.level_selection }
+    geo_menu.add_item('Pull to Length') { GeometryTools.pull_to_length }
 
     mat_menu = tools_sub.add_submenu('Materials')
     mat_menu.add_item('Purge Unused Materials') { MaterialTools.purge_unused_materials }
