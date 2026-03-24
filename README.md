@@ -71,6 +71,14 @@ ReentrantSketchup::MaterialTools.select_by_material('Brick')
 |---------|-------------|
 | Zoom Selection | Zoom camera to fit the current selection |
 
+### Rotation Tools (Context Menu)
+Right-click any selection to access **Rotate 90°**:
+| Command | Description |
+|---------|-------------|
+| Red Axis (X) | Rotate selection 90° around the X axis |
+| Green Axis (Y) | Rotate selection 90° around the Y axis |
+| Blue Axis (Z) | Rotate selection 90° around the Z axis |
+
 ## Ruby Console Usage
 
 All tools are accessible from the SketchUp Ruby Console:
