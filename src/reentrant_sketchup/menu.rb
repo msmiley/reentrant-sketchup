@@ -46,6 +46,9 @@ module ReentrantSketchup
     cam_sub = UI.menu('Camera').add_submenu(PLUGIN_NAME)
     cam_sub.add_item('Zoom Selection') { CameraTools.zoom_selection }
 
+    # -- Edit menu: Toggle Snapping (assignable to shortcut) --
+    edit_sub.add_item('Toggle Snapping') { SnappingTools.toggle_snapping }
+
     # -- Context menu: Rotate 90° & Duplicate --
     RotationTools.register_context_menu
     DuplicateTools.register_context_menu
