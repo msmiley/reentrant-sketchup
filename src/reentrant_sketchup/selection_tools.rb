@@ -32,14 +32,24 @@ module ReentrantSketchup
       puts "Selected #{groups.length} groups"
     end
 
-    # Select all component instances in the current context.
+    # Select all component instances that share the same definition as the
+    # currently selected component instance.
     def self.select_all_components
       model = Sketchup.active_model
-      entities = model.active_entities
-      components = entities.grep(Sketchup::ComponentInstance)
+      selected = model.selection.grep(Sketchup::ComponentInstance)
+
+      if selected.empty?
+        return puts('Select a component instance first')
+      end
+
+      definitions = selected.map(&:definition).uniq
+      matches = model.active_entities.grep(Sketchup::ComponentInstance).select do |ci|
+        definitions.include?(ci.definition)
+      end
+
       model.selection.clear
-      model.selection.add(components)
-      puts "Selected #{components.length} component instances"
+      model.selection.add(matches)
+      puts "Selected #{matches.length} matching component instances"
     end
 
     # Select all entities connected to the current selection.
