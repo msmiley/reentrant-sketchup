@@ -2,26 +2,14 @@
 
 module ReentrantSketchup
   unless file_loaded?(__FILE__)
-    # -- Edit menu: Selection & Group operations --
+    # -- Edit menu --
     edit_sub = UI.menu('Edit').add_submenu(PLUGIN_NAME)
-
-    sel_menu = edit_sub.add_submenu('Selection')
-    sel_menu.add_item('Select All Edges') { SelectionTools.select_all_edges }
-    sel_menu.add_item('Select All Faces') { SelectionTools.select_all_faces }
-    sel_menu.add_item('Select All Groups') { SelectionTools.select_all_groups }
-    sel_menu.add_item('Select All Components') { SelectionTools.select_all_components }
-    sel_menu.add_item('Select Connected') { SelectionTools.select_connected }
-    sel_menu.add_item('Invert Selection') { SelectionTools.invert_selection }
-
-    grp_menu = edit_sub.add_submenu('Groups && Components')
-    grp_menu.add_item('Group Selection') { GroupTools.group_selection }
-    grp_menu.add_item('Explode Selection') { GroupTools.explode_selection }
-    grp_menu.add_item('Group to Component') { GroupTools.group_to_component }
-    grp_menu.add_item('Lock Selection') { GroupTools.lock_selection }
-    grp_menu.add_item('Unlock Selection') { GroupTools.unlock_selection }
-    grp_menu.add_item('Make Unique Each') { GroupTools.make_unique_each }
-    grp_menu.add_item('Trim Multiple') { GroupTools.trim_multiple }
-    grp_menu.add_item('Purge Empty Groups') { GroupTools.purge_empty_groups }
+    edit_sub.add_item('Make Unique Each') { GroupTools.make_unique_each }
+    edit_sub.add_item('Trim Multiple') { GroupTools.trim_multiple }
+    snap_id = edit_sub.add_item('Toggle Snapping') { SnappingTools.toggle_snapping }
+    edit_sub.set_validation_proc(snap_id) {
+      SnappingTools.snapping_enabled? ? MF_CHECKED : MF_UNCHECKED
+    }
 
     # -- Tools menu: Geometry & Material operations --
     tools_sub = UI.menu('Tools').add_submenu(PLUGIN_NAME)
@@ -45,9 +33,6 @@ module ReentrantSketchup
     # -- Camera menu: View operations --
     cam_sub = UI.menu('Camera').add_submenu(PLUGIN_NAME)
     cam_sub.add_item('Zoom Selection') { CameraTools.zoom_selection }
-
-    # -- Edit menu: Toggle Snapping (assignable to shortcut) --
-    edit_sub.add_item('Toggle Snapping') { SnappingTools.toggle_snapping }
 
     # -- Context menu: Rotate 90° & Duplicate --
     RotationTools.register_context_menu
