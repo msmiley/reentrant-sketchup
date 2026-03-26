@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require_relative 'selection_tools'
 require_relative 'geometry_tools'
 require_relative 'group_tools'
 require_relative 'layer_tools'
