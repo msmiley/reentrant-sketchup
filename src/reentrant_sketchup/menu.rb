@@ -38,8 +38,12 @@ module ReentrantSketchup
     RotationTools.register_context_menu
     DuplicateTools.register_context_menu
 
-    # -- Extensions menu: Update check --
+    # -- Extensions menu: MCP server & Update check --
     ext_menu = UI.menu('Plugins').add_submenu(PLUGIN_NAME)
+    mcp_id = ext_menu.add_item('MCP Server') { McpServer.toggle }
+    ext_menu.set_validation_proc(mcp_id) {
+      McpServer.running? ? MF_CHECKED : MF_UNCHECKED
+    }
     ext_menu.add_item('Check for Updates...') { Updater.check_for_update(notify_if_current: true) }
 
     file_loaded(__FILE__)
