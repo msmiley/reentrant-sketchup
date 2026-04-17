@@ -13,7 +13,7 @@ module ReentrantSketchup
   # and executed on the main thread via a UI.start_timer pump.
   module McpServer
     DEFAULT_PORT = 3636
-    PROTOCOL_VERSION = '2024-11-05'
+    PROTOCOL_VERSION = '2025-06-18'
 
     @server_thread = nil
     @tcp_server = nil
@@ -81,12 +81,15 @@ module ReentrantSketchup
       @tcp_server = TCPServer.new('127.0.0.1', port)
 
       @server_thread = Thread.new do
+        Thread.current.abort_on_exception = false
         loop do
           begin
             client = @tcp_server.accept
             Thread.new(client) { |c| handle_connection(c) }
           rescue IOError, Errno::EBADF
             break
+          rescue StandardError => e
+            puts "[MCP] accept error: #{e.class}: #{e.message}"
           end
         end
       end
@@ -128,9 +131,15 @@ module ReentrantSketchup
     # --- HTTP connection handling (background thread) -----------------------
 
     def handle_connection(client)
-      request_line = client.readline
+      request_line = client.readline.to_s.chomp
+      return if request_line.empty?
+
+      method_name, path, _ = request_line.split(' ', 3)
+
       headers = {}
-      while (line = client.readline) && line != "\r\n"
+      loop do
+        line = client.readline
+        break if line.nil? || line.chomp.empty?
         k, v = line.chomp.split(': ', 2)
         headers[k.downcase] = v if k && v
       end
@@ -138,28 +147,64 @@ module ReentrantSketchup
       content_length = headers['content-length'].to_i
       body = content_length.positive? ? client.read(content_length) : ''
 
-      method_name, path, _ = request_line.strip.split(' ', 3)
+      status, response_body, extra_headers = route(method_name, path, body)
+      write_response(client, status, response_body, extra_headers)
+    rescue EOFError, Errno::ECONNRESET, Errno::EPIPE
+      # Client disconnected; nothing to do.
+    rescue StandardError => e
+      puts "[MCP] connection error: #{e.class}: #{e.message}"
+    ensure
+      begin
+        client.flush
+      rescue StandardError
+        # ignore
+      end
+      client.close rescue nil
+    end
 
-      status, response_body = route(method_name, path, body)
-
+    def write_response(client, status, body, extra_headers = {})
+      body = body.to_s
       client.write("HTTP/1.1 #{status}\r\n")
       client.write("Content-Type: application/json\r\n")
-      client.write("Content-Length: #{response_body.bytesize}\r\n")
+      client.write("Content-Length: #{body.bytesize}\r\n")
+      client.write("Connection: close\r\n")
       client.write("Access-Control-Allow-Origin: *\r\n")
+      client.write("Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n")
+      client.write("Access-Control-Allow-Headers: Content-Type, Mcp-Session-Id, Accept\r\n")
+      extra_headers.each { |k, v| client.write("#{k}: #{v}\r\n") }
       client.write("\r\n")
-      client.write(response_body)
-    rescue StandardError => e
-      puts "[MCP] connection error: #{e.message}"
-    ensure
-      client.close rescue nil
+      client.write(body) unless body.empty?
+      client.flush
     end
 
     def route(http_method, path, body)
       return ['404 Not Found', '{}'] unless path&.start_with?('/mcp')
-      return ['405 Method Not Allowed', '{}'] unless http_method == 'POST'
 
+      case http_method
+      when 'OPTIONS'
+        # CORS preflight
+        ['204 No Content', '']
+      when 'GET'
+        # SSE stream for server-to-client messages (not implemented).
+        # Return 405 per MCP Streamable HTTP spec when unsupported.
+        ['405 Method Not Allowed', '']
+      when 'POST'
+        handle_post(body)
+      else
+        ['405 Method Not Allowed', '']
+      end
+    end
+
+    def handle_post(body)
       message = JSON.parse(body) rescue nil
       return ['400 Bad Request', { error: 'invalid JSON' }.to_json] unless message
+
+      # JSON-RPC notifications (no id field) must not have a response body.
+      # MCP Streamable HTTP spec says to return 202 Accepted.
+      if message['id'].nil?
+        dispatch(message)
+        return ['202 Accepted', '']
+      end
 
       response = dispatch(message)
       ['200 OK', response ? response.to_json : '']
