@@ -131,47 +131,55 @@ module ReentrantSketchup
     # --- HTTP connection handling (background thread) -----------------------
 
     def handle_connection(client)
-      request_line = client.readline.to_s.chomp
-      return if request_line.empty?
-
-      method_name, path, _ = request_line.split(' ', 3)
-
-      headers = {}
+      # Support HTTP/1.1 keep-alive: loop reading requests on the same
+      # connection until the client closes it or asks to close.
       loop do
-        line = client.readline
-        break if line.nil? || line.chomp.empty?
-        k, v = line.chomp.split(': ', 2)
-        headers[k.downcase] = v if k && v
+        # Wait up to 30s for data; close idle connections.
+        ready = IO.select([client], nil, nil, 30)
+        break unless ready
+
+        request_line = client.gets
+        break if request_line.nil?
+        request_line = request_line.chomp
+        break if request_line.empty?
+
+        method_name, path, _ = request_line.split(' ', 3)
+
+        headers = {}
+        loop do
+          line = client.gets
+          break if line.nil? || line.chomp.empty?
+          k, v = line.chomp.split(': ', 2)
+          headers[k.downcase] = v if k && v
+        end
+
+        content_length = headers['content-length'].to_i
+        body = content_length.positive? ? client.read(content_length) : ''
+
+        close_requested = headers['connection']&.downcase == 'close'
+
+        status, response_body = route(method_name, path, body)
+        write_response(client, status, response_body, close_requested)
+
+        break if close_requested
       end
-
-      content_length = headers['content-length'].to_i
-      body = content_length.positive? ? client.read(content_length) : ''
-
-      status, response_body, extra_headers = route(method_name, path, body)
-      write_response(client, status, response_body, extra_headers)
-    rescue EOFError, Errno::ECONNRESET, Errno::EPIPE
+    rescue EOFError, Errno::ECONNRESET, Errno::EPIPE, IOError
       # Client disconnected; nothing to do.
     rescue StandardError => e
       puts "[MCP] connection error: #{e.class}: #{e.message}"
     ensure
-      begin
-        client.flush
-      rescue StandardError
-        # ignore
-      end
       client.close rescue nil
     end
 
-    def write_response(client, status, body, extra_headers = {})
+    def write_response(client, status, body, close_conn = false)
       body = body.to_s
       client.write("HTTP/1.1 #{status}\r\n")
       client.write("Content-Type: application/json\r\n")
       client.write("Content-Length: #{body.bytesize}\r\n")
-      client.write("Connection: close\r\n")
+      client.write("Connection: #{close_conn ? 'close' : 'keep-alive'}\r\n")
       client.write("Access-Control-Allow-Origin: *\r\n")
       client.write("Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n")
       client.write("Access-Control-Allow-Headers: Content-Type, Mcp-Session-Id, Accept\r\n")
-      extra_headers.each { |k, v| client.write("#{k}: #{v}\r\n") }
       client.write("\r\n")
       client.write(body) unless body.empty?
       client.flush
@@ -182,11 +190,8 @@ module ReentrantSketchup
 
       case http_method
       when 'OPTIONS'
-        # CORS preflight
         ['204 No Content', '']
       when 'GET'
-        # SSE stream for server-to-client messages (not implemented).
-        # Return 405 per MCP Streamable HTTP spec when unsupported.
         ['405 Method Not Allowed', '']
       when 'POST'
         handle_post(body)
