@@ -79,6 +79,28 @@ Right-click any selection to access **Rotate 90°**:
 | Green Axis (Y) | Rotate selection 90° around the Y axis |
 | Blue Axis (Z) | Rotate selection 90° around the Z axis |
 
+### MCP Server (Claude Code integration)
+
+The extension can expose a local MCP (Model Context Protocol) server so Claude Code and other MCP clients can drive SketchUp directly.
+
+**Start/stop:** **Plugins > Reentrant SketchUp > MCP Server** (checkmark shows when running). Listens on `http://127.0.0.1:3636/mcp` by default.
+
+**Connect from Claude Code:**
+```
+claude mcp add sketchup --transport http http://127.0.0.1:3636/mcp
+```
+
+**Available tools:**
+| Tool | Description |
+|------|-------------|
+| `get_selection` | Current selection count and entity types |
+| `get_model_info` | Model path, entity/definition/material/layer counts |
+| `list_entities` | List entities in the active context |
+| `execute_ruby` | Evaluate arbitrary Ruby in the SketchUp context |
+| `create_box` | Create a rectangular solid at given origin + dimensions |
+
+All SketchUp-touching operations run on the main thread (marshalled through a queue pumped by `UI.start_timer`) to stay thread-safe.
+
 ## Ruby Console Usage
 
 All tools are accessible from the SketchUp Ruby Console:

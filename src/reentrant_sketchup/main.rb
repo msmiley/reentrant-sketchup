@@ -8,6 +8,7 @@ require_relative 'camera_tools'
 require_relative 'rotation_tools'
 require_relative 'duplicate_tools'
 require_relative 'snapping_tools'
+require_relative 'mcp_server'
 require_relative 'updater'
 require_relative 'menu'
 

@@ -1,0 +1,331 @@
+# frozen_string_literal: true
+
+require 'socket'
+require 'json'
+require 'thread'
+
+module ReentrantSketchup
+  # Minimal MCP (Model Context Protocol) server over HTTP.
+  # Lets Claude Code (or any MCP client) connect and drive SketchUp.
+  #
+  # Protocol: JSON-RPC 2.0 over HTTP POST to /mcp
+  # Thread safety: request handlers that touch the SketchUp model are queued
+  # and executed on the main thread via a UI.start_timer pump.
+  module McpServer
+    DEFAULT_PORT = 3636
+    PROTOCOL_VERSION = '2024-11-05'
+
+    @server_thread = nil
+    @tcp_server = nil
+    @main_pump_timer = nil
+    @queue = []
+    @queue_mutex = Mutex.new
+    @port = DEFAULT_PORT
+
+    TOOLS = [
+      {
+        name: 'get_selection',
+        description: 'Get info about the current SketchUp selection (count, types).',
+        inputSchema: { type: 'object', properties: {}, required: [] }
+      },
+      {
+        name: 'get_model_info',
+        description: 'Get info about the active SketchUp model (path, entity counts).',
+        inputSchema: { type: 'object', properties: {}, required: [] }
+      },
+      {
+        name: 'list_entities',
+        description: 'List entities in the active context with their types.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            limit: { type: 'integer', description: 'Max entities to return', default: 50 }
+          }
+        }
+      },
+      {
+        name: 'execute_ruby',
+        description: 'Execute arbitrary Ruby code in the SketchUp context. Returns the result as a string.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            code: { type: 'string', description: 'Ruby code to evaluate' }
+          },
+          required: ['code']
+        }
+      },
+      {
+        name: 'create_box',
+        description: 'Create a rectangular solid at the given origin with given dimensions (inches).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            x: { type: 'number', default: 0 },
+            y: { type: 'number', default: 0 },
+            z: { type: 'number', default: 0 },
+            width: { type: 'number' },
+            depth: { type: 'number' },
+            height: { type: 'number' }
+          },
+          required: ['width', 'depth', 'height']
+        }
+      }
+    ].freeze
+
+    module_function
+
+    def start(port: DEFAULT_PORT)
+      return if running?
+
+      @port = port
+      @tcp_server = TCPServer.new('127.0.0.1', port)
+
+      @server_thread = Thread.new do
+        loop do
+          begin
+            client = @tcp_server.accept
+            Thread.new(client) { |c| handle_connection(c) }
+          rescue IOError, Errno::EBADF
+            break
+          end
+        end
+      end
+
+      # Pump the main-thread queue every 50ms so model ops run safely
+      @main_pump_timer = UI.start_timer(0.05, true) { pump_queue }
+
+      puts "[Reentrant SketchUp] MCP server running at http://127.0.0.1:#{port}/mcp"
+    rescue Errno::EADDRINUSE
+      UI.messagebox("MCP server: port #{port} already in use.")
+      @tcp_server = nil
+    end
+
+    def stop
+      return unless running?
+
+      UI.stop_timer(@main_pump_timer) if @main_pump_timer
+      @main_pump_timer = nil
+
+      @tcp_server.close rescue nil
+      @tcp_server = nil
+      @server_thread.kill rescue nil
+      @server_thread = nil
+      puts '[Reentrant SketchUp] MCP server stopped'
+    end
+
+    def running?
+      !@tcp_server.nil? && !@tcp_server.closed?
+    end
+
+    def toggle
+      running? ? stop : start
+    end
+
+    def port
+      @port
+    end
+
+    # --- HTTP connection handling (background thread) -----------------------
+
+    def handle_connection(client)
+      request_line = client.readline
+      headers = {}
+      while (line = client.readline) && line != "\r\n"
+        k, v = line.chomp.split(': ', 2)
+        headers[k.downcase] = v if k && v
+      end
+
+      content_length = headers['content-length'].to_i
+      body = content_length.positive? ? client.read(content_length) : ''
+
+      method_name, path, _ = request_line.strip.split(' ', 3)
+
+      status, response_body = route(method_name, path, body)
+
+      client.write("HTTP/1.1 #{status}\r\n")
+      client.write("Content-Type: application/json\r\n")
+      client.write("Content-Length: #{response_body.bytesize}\r\n")
+      client.write("Access-Control-Allow-Origin: *\r\n")
+      client.write("\r\n")
+      client.write(response_body)
+    rescue StandardError => e
+      puts "[MCP] connection error: #{e.message}"
+    ensure
+      client.close rescue nil
+    end
+
+    def route(http_method, path, body)
+      return ['404 Not Found', '{}'] unless path&.start_with?('/mcp')
+      return ['405 Method Not Allowed', '{}'] unless http_method == 'POST'
+
+      message = JSON.parse(body) rescue nil
+      return ['400 Bad Request', { error: 'invalid JSON' }.to_json] unless message
+
+      response = dispatch(message)
+      ['200 OK', response ? response.to_json : '']
+    end
+
+    def dispatch(message)
+      method = message['method']
+      id = message['id']
+      params = message['params'] || {}
+
+      case method
+      when 'initialize'
+        {
+          jsonrpc: '2.0',
+          id: id,
+          result: {
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: { tools: {} },
+            serverInfo: { name: 'reentrant-sketchup', version: PLUGIN_VERSION }
+          }
+        }
+      when 'tools/list'
+        { jsonrpc: '2.0', id: id, result: { tools: TOOLS } }
+      when 'tools/call'
+        name = params['name']
+        args = params['arguments'] || {}
+        begin
+          text = on_main_thread { call_tool(name, args) }
+          {
+            jsonrpc: '2.0',
+            id: id,
+            result: { content: [{ type: 'text', text: text.to_s }] }
+          }
+        rescue StandardError => e
+          {
+            jsonrpc: '2.0',
+            id: id,
+            result: {
+              isError: true,
+              content: [{ type: 'text', text: "Error: #{e.message}\n#{e.backtrace&.first(5)&.join("\n")}" }]
+            }
+          }
+        end
+      when 'ping'
+        { jsonrpc: '2.0', id: id, result: {} }
+      when 'notifications/initialized'
+        nil
+      else
+        {
+          jsonrpc: '2.0',
+          id: id,
+          error: { code: -32601, message: "Method not found: #{method}" }
+        }
+      end
+    end
+
+    # --- Main-thread marshalling --------------------------------------------
+
+    # Enqueue a block to run on the main thread, block until it completes.
+    def on_main_thread(&block)
+      mutex = Mutex.new
+      cv = ConditionVariable.new
+      result = { done: false, value: nil, error: nil }
+
+      @queue_mutex.synchronize do
+        @queue << lambda do
+          begin
+            result[:value] = block.call
+          rescue StandardError => e
+            result[:error] = e
+          end
+          mutex.synchronize do
+            result[:done] = true
+            cv.signal
+          end
+        end
+      end
+
+      mutex.synchronize do
+        cv.wait(mutex, 30) until result[:done]
+      end
+
+      raise result[:error] if result[:error]
+      raise 'Main thread did not respond within 30s' unless result[:done]
+      result[:value]
+    end
+
+    def pump_queue
+      tasks = nil
+      @queue_mutex.synchronize do
+        tasks = @queue.dup
+        @queue.clear
+      end
+      tasks.each(&:call)
+    end
+
+    # --- Tool implementations (main thread only) ----------------------------
+
+    def call_tool(name, args)
+      case name
+      when 'get_selection'     then tool_get_selection
+      when 'get_model_info'    then tool_get_model_info
+      when 'list_entities'     then tool_list_entities(args['limit'] || 50)
+      when 'execute_ruby'      then tool_execute_ruby(args['code'])
+      when 'create_box'        then tool_create_box(args)
+      else
+        "Unknown tool: #{name}"
+      end
+    end
+
+    def tool_get_selection
+      model = Sketchup.active_model
+      sel = model.selection.to_a
+      types = sel.group_by { |e| e.class.to_s.sub('Sketchup::', '') }
+                 .transform_values(&:count)
+      JSON.pretty_generate(count: sel.length, types: types)
+    end
+
+    def tool_get_model_info
+      model = Sketchup.active_model
+      info = {
+        title: model.title,
+        path: model.path,
+        entities: model.entities.count,
+        definitions: model.definitions.count,
+        materials: model.materials.count,
+        layers: model.layers.count
+      }
+      JSON.pretty_generate(info)
+    end
+
+    def tool_list_entities(limit)
+      entities = Sketchup.active_model.active_entities.to_a.first(limit)
+      out = entities.map do |e|
+        { type: e.class.to_s.sub('Sketchup::', ''), typename: e.typename }
+      end
+      JSON.pretty_generate(entities: out, total: Sketchup.active_model.active_entities.count)
+    end
+
+    def tool_execute_ruby(code)
+      result = eval(code, TOPLEVEL_BINDING) # rubocop:disable Security/Eval
+      result.inspect
+    end
+
+    def tool_create_box(args)
+      x = args['x'] || 0
+      y = args['y'] || 0
+      z = args['z'] || 0
+      w = args['width']
+      d = args['depth']
+      h = args['height']
+
+      model = Sketchup.active_model
+      model.start_operation('MCP Create Box', true)
+      group = model.active_entities.add_group
+      pts = [
+        [x, y, z],
+        [x + w, y, z],
+        [x + w, y + d, z],
+        [x, y + d, z]
+      ]
+      face = group.entities.add_face(pts)
+      face.reverse! if face.normal.z < 0
+      face.pushpull(h)
+      model.commit_operation
+      "Created box at [#{x}, #{y}, #{z}] size #{w}x#{d}x#{h}"
+    end
+  end
+end
