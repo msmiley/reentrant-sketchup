@@ -3,6 +3,7 @@
 require 'socket'
 require 'json'
 require 'thread'
+require 'pathname'
 
 module ReentrantSketchup
   # Minimal MCP (Model Context Protocol) server over HTTP.
@@ -15,6 +16,7 @@ module ReentrantSketchup
     DEFAULT_PORT = 3636
     PROTOCOL_VERSION = '2025-06-18'
     MAX_RESULT_BYTES = 4096
+    MAX_SCRIPT_FILE_BYTES = 1 * 1024 * 1024  # 1 MB
 
     @server_thread = nil
     @tcp_server = nil
@@ -51,13 +53,30 @@ module ReentrantSketchup
       },
       {
         name: 'execute_ruby',
-        description: 'Execute arbitrary Ruby code in the SketchUp context. Returns the result as a string.',
+        description: 'Execute arbitrary Ruby code in the SketchUp context. Returns a structured JSON result (status/result/elapsed_ms/entity_count). Atomic by default — wraps execution in a SketchUp undo operation and aborts on any exception.',
         inputSchema: {
           type: 'object',
           properties: {
-            code: { type: 'string', description: 'Ruby code to evaluate' }
+            code:      { type: 'string', description: 'Ruby code to evaluate' },
+            op_name:   { type: 'string', description: 'Label for the SketchUp undo operation.', default: 'MCP execute_ruby' },
+            wrap_op:   { type: 'boolean', description: 'Wrap the eval in start_operation/commit_operation. Set false for read-only code.', default: true },
+            timeout_s: { type: 'integer', description: 'Server-side response-wait timeout (seconds). A timeout does not interrupt the underlying Ruby work; use probe to check state before retrying.', default: 30 }
           },
           required: ['code']
+        }
+      },
+      {
+        name: 'execute_ruby_file',
+        description: 'Read a Ruby script from an absolute path on the SketchUp host and run it through the same hardened path as execute_ruby. Useful for scripts too large for the transport and for debugging (the file stays on disk).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path:      { type: 'string', description: 'Absolute path to a .rb file on the SketchUp host.' },
+            op_name:   { type: 'string', description: 'Label for the SketchUp undo operation.', default: 'MCP execute_ruby_file' },
+            wrap_op:   { type: 'boolean', default: true },
+            timeout_s: { type: 'integer', default: 30 }
+          },
+          required: ['path']
         }
       },
       {
@@ -430,7 +449,8 @@ module ReentrantSketchup
       when 'get_selection'     then tool_get_selection
       when 'get_model_info'    then tool_get_model_info
       when 'list_entities'     then tool_list_entities(args['limit'] || 50)
-      when 'execute_ruby'      then tool_execute_ruby(args['code'])
+      when 'execute_ruby'      then tool_execute_ruby(args)
+      when 'execute_ruby_file' then tool_execute_ruby_file(args)
       when 'probe'             then tool_probe_live  # only reached when live: true
       when 'create_box'        then tool_create_box(args)
       else
@@ -485,9 +505,46 @@ module ReentrantSketchup
       }
     end
 
-    def tool_execute_ruby(code)
-      return { status: 'error', error: 'ArgumentError', message: 'code is required' } if code.nil? || code.to_s.empty?
-      safe_eval(code, op_name: 'MCP execute_ruby')
+    def tool_execute_ruby(args)
+      code = args['code']
+      return bad_arg('code is required') if code.nil? || code.to_s.empty?
+      safe_eval(
+        code,
+        op_name: (args['op_name'] || 'MCP execute_ruby').to_s,
+        wrap_op: args.fetch('wrap_op', true)
+      )
+    end
+
+    def tool_execute_ruby_file(args)
+      path    = args['path'].to_s
+      op_name = (args['op_name'] || 'MCP execute_ruby_file').to_s
+      wrap_op = args.fetch('wrap_op', true)
+
+      return bad_arg('path is required') if path.empty?
+      return bad_arg("path must be absolute: #{path}") unless Pathname.new(path).absolute?
+      return bad_arg("path not found: #{path}") unless File.file?(path)
+      return bad_arg("path not readable: #{path}") unless File.readable?(path)
+
+      size = File.size(path)
+      if size > MAX_SCRIPT_FILE_BYTES
+        return bad_arg("file too large: #{size} bytes (max #{MAX_SCRIPT_FILE_BYTES})")
+      end
+
+      code =
+        begin
+          File.read(path)
+        rescue SystemCallError => e
+          return { status: 'error', error: e.class.name, message: e.message.to_s }
+        end
+
+      result = safe_eval(code, op_name: op_name, wrap_op: wrap_op)
+      result[:source_file] = path
+      result[:source_bytes] = size
+      result
+    end
+
+    def bad_arg(msg)
+      { status: 'error', error: 'ArgumentError', message: msg }
     end
 
     # --- safe_eval --------------------------------------------------------
