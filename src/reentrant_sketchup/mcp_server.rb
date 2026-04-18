@@ -23,6 +23,10 @@ module ReentrantSketchup
     @queue_mutex = Mutex.new
     @port = DEFAULT_PORT
     @open_operations = 0
+    @snapshot = { fetched_at_ms: nil, status: 'pending' }.freeze
+    @snapshot_mutex = Mutex.new
+    @tick_count = 0
+    SNAPSHOT_REFRESH_EVERY_N_TICKS = 10  # pump runs every 50ms, so ~500ms
 
     TOOLS = [
       {
@@ -54,6 +58,16 @@ module ReentrantSketchup
             code: { type: 'string', description: 'Ruby code to evaluate' }
           },
           required: ['code']
+        }
+      },
+      {
+        name: 'probe',
+        description: 'Fast diagnostic read of SketchUp state (title, path, entity counts, active context, open_operations). Reads a snapshot cache by default — safe to call even when execute_ruby is stuck. Pass live=true to force a fresh main-thread read.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            live: { type: 'boolean', description: 'Force a main-thread read instead of the snapshot cache.', default: false }
+          }
         }
       },
       {
@@ -98,6 +112,10 @@ module ReentrantSketchup
 
       # Pump the main-thread queue every 50ms so model ops run safely
       @main_pump_timer = UI.start_timer(0.05, true) { pump_queue }
+
+      # Seed the snapshot so probe has real data before the first pump tick.
+      # start() runs on the main thread (from the menu), so this is safe.
+      refresh_snapshot
 
       puts "[Reentrant SketchUp] MCP server running at http://127.0.0.1:#{port}/mcp"
     rescue Errno::EADDRINUSE
@@ -240,7 +258,14 @@ module ReentrantSketchup
         args = params['arguments'] || {}
         payload =
           begin
-            on_main_thread { call_tool(name, args) }
+            if name == 'probe' && !args['live']
+              # Snapshot path: worker-thread-only, no main-thread round-trip.
+              # This is the escape hatch that works even if execute_ruby is
+              # stuck on the main thread.
+              read_snapshot_for_probe
+            else
+              on_main_thread { call_tool(name, args) }
+            end
           rescue StandardError => e
             {
               status:    'error',
@@ -307,6 +332,95 @@ module ReentrantSketchup
         @queue.clear
       end
       tasks.each(&:call)
+
+      @tick_count += 1
+      refresh_snapshot if (@tick_count % SNAPSHOT_REFRESH_EVERY_N_TICKS).zero?
+    end
+
+    # --- Snapshot cache (read from worker threads, written on main thread) ---
+
+    # Build a fresh snapshot hash and atomically publish it.
+    # MUST be called on the main thread (touches the SketchUp API).
+    def refresh_snapshot
+      model = Sketchup.active_model
+      snap =
+        if model
+          {
+            title:             safe_read { model.title },
+            path:              safe_read { model.path },
+            entity_count:      safe_read { model.entities.count },
+            active_context:    safe_read { active_context_label(model) },
+            definitions:       safe_read { model.definitions.count },
+            materials:         safe_read { model.materials.count },
+            layers:            safe_read { model.layers.count },
+            open_operations:   @open_operations,
+            extension_version: PLUGIN_VERSION,
+            fetched_at_ms:     now_ms
+          }.freeze
+        else
+          {
+            fetched_at_ms:     now_ms,
+            extension_version: PLUGIN_VERSION,
+            open_operations:   @open_operations,
+            note:              'no active model'
+          }.freeze
+        end
+      @snapshot_mutex.synchronize { @snapshot = snap }
+    rescue StandardError => e
+      # Leave the prior snapshot in place; record error for diagnostics.
+      puts "[MCP] snapshot refresh failed: #{e.class}: #{e.message}"
+    end
+
+    # Snapshot read from the worker thread — mutex only, no main-thread wait.
+    def read_snapshot_for_probe
+      snap = @snapshot_mutex.synchronize { @snapshot }
+      decorate_snapshot(snap, 'snapshot')
+    end
+
+    # Live read — runs inside on_main_thread, so it also refreshes the cache.
+    def tool_probe_live
+      refresh_snapshot
+      snap = @snapshot_mutex.synchronize { @snapshot }
+      decorate_snapshot(snap, 'live')
+    end
+
+    def decorate_snapshot(snap, source)
+      fetched = snap[:fetched_at_ms]
+      age = fetched ? (now_ms - fetched) : nil
+      snap.merge(
+        status:           snap[:status] || 'ok',
+        source:           source,
+        snapshot_age_ms:  age
+      )
+    end
+
+    # Run a block, return its value, or nil on any exception. Used inside the
+    # snapshot builder so a single broken accessor doesn't nuke the whole
+    # snapshot — we'd rather publish partial data than stall the probe.
+    def safe_read
+      yield
+    rescue StandardError
+      nil
+    end
+
+    def active_context_label(model)
+      path = (model.respond_to?(:active_path) ? model.active_path : nil) || []
+      return 'model' if path.empty?
+      leaf = path.last
+      klass = leaf.class.to_s
+      if klass == 'Sketchup::ComponentInstance'
+        name = leaf.respond_to?(:definition) ? leaf.definition&.name.to_s : ''
+        name.empty? ? 'component' : "component:#{name}"
+      elsif klass == 'Sketchup::Group'
+        name = leaf.respond_to?(:name) ? leaf.name.to_s : ''
+        name.empty? ? 'group' : "group:#{name}"
+      else
+        "other:#{klass}"
+      end
+    end
+
+    def now_ms
+      (Time.now.to_f * 1000).to_i
     end
 
     # --- Tool implementations (main thread only) ----------------------------
@@ -317,6 +431,7 @@ module ReentrantSketchup
       when 'get_model_info'    then tool_get_model_info
       when 'list_entities'     then tool_list_entities(args['limit'] || 50)
       when 'execute_ruby'      then tool_execute_ruby(args['code'])
+      when 'probe'             then tool_probe_live  # only reached when live: true
       when 'create_box'        then tool_create_box(args)
       else
         { status: 'error', error: 'UnknownTool', message: "Unknown tool: #{name}" }
@@ -403,6 +518,7 @@ module ReentrantSketchup
         if began_op
           model.commit_operation
           @open_operations -= 1 if @open_operations.positive?
+          refresh_snapshot
         end
         result_str =
           begin
@@ -477,6 +593,7 @@ module ReentrantSketchup
         model.commit_operation
         @open_operations -= 1 if @open_operations.positive?
         began_op = false
+        refresh_snapshot
         {
           status:  'ok',
           message: "Created box at [#{x}, #{y}, #{z}] size #{w}x#{d}x#{h}",
