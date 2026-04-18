@@ -238,23 +238,24 @@ module ReentrantSketchup
       when 'tools/call'
         name = params['name']
         args = params['arguments'] || {}
-        begin
-          text = on_main_thread { call_tool(name, args) }
-          {
-            jsonrpc: '2.0',
-            id: id,
-            result: { content: [{ type: 'text', text: text.to_s }] }
-          }
-        rescue StandardError => e
-          {
-            jsonrpc: '2.0',
-            id: id,
-            result: {
-              isError: true,
-              content: [{ type: 'text', text: "Error: #{e.message}\n#{e.backtrace&.first(5)&.join("\n")}" }]
+        payload =
+          begin
+            on_main_thread { call_tool(name, args) }
+          rescue StandardError => e
+            {
+              status:    'error',
+              error:     e.class.name,
+              message:   e.message.to_s,
+              backtrace: (e.backtrace || []).first(8)
             }
-          }
-        end
+          end
+        payload = { status: 'ok', result: payload.to_s } unless payload.is_a?(Hash)
+        payload[:status] ||= 'ok'
+        is_error = %w[error timeout].include?(payload[:status].to_s)
+        text = serialize_payload(payload)
+        rpc_result = { content: [{ type: 'text', text: text }] }
+        rpc_result[:isError] = true if is_error
+        { jsonrpc: '2.0', id: id, result: rpc_result }
       when 'ping'
         { jsonrpc: '2.0', id: id, result: {} }
       when 'notifications/initialized'
@@ -318,8 +319,22 @@ module ReentrantSketchup
       when 'execute_ruby'      then tool_execute_ruby(args['code'])
       when 'create_box'        then tool_create_box(args)
       else
-        "Unknown tool: #{name}"
+        { status: 'error', error: 'UnknownTool', message: "Unknown tool: #{name}" }
       end
+    end
+
+    # Serialize a tool-result hash to a JSON string for the MCP text field.
+    # Pretty-printed so humans and LLMs reading the text can skim it. If
+    # generation fails (pathological content), fall back to a minimal
+    # envelope so the transport still returns something valid.
+    def serialize_payload(payload)
+      JSON.pretty_generate(payload)
+    rescue StandardError => e
+      JSON.pretty_generate(
+        status:  'error',
+        error:   'SerializationFailed',
+        message: e.message.to_s
+      )
     end
 
     def tool_get_selection
@@ -327,20 +342,20 @@ module ReentrantSketchup
       sel = model.selection.to_a
       types = sel.group_by { |e| e.class.to_s.sub('Sketchup::', '') }
                  .transform_values(&:count)
-      JSON.pretty_generate(count: sel.length, types: types)
+      { status: 'ok', count: sel.length, types: types }
     end
 
     def tool_get_model_info
       model = Sketchup.active_model
-      info = {
-        title: model.title,
-        path: model.path,
-        entities: model.entities.count,
+      {
+        status:      'ok',
+        title:       model.title,
+        path:        model.path,
+        entities:    model.entities.count,
         definitions: model.definitions.count,
-        materials: model.materials.count,
-        layers: model.layers.count
+        materials:   model.materials.count,
+        layers:      model.layers.count
       }
-      JSON.pretty_generate(info)
     end
 
     def tool_list_entities(limit)
@@ -348,12 +363,16 @@ module ReentrantSketchup
       out = entities.map do |e|
         { type: e.class.to_s.sub('Sketchup::', ''), typename: e.typename }
       end
-      JSON.pretty_generate(entities: out, total: Sketchup.active_model.active_entities.count)
+      {
+        status:   'ok',
+        entities: out,
+        total:    Sketchup.active_model.active_entities.count
+      }
     end
 
     def tool_execute_ruby(code)
-      result = eval(code, TOPLEVEL_BINDING) # rubocop:disable Security/Eval
-      result.inspect
+      return { status: 'error', error: 'ArgumentError', message: 'code is required' } if code.nil? || code.to_s.empty?
+      safe_eval(code, op_name: 'MCP execute_ruby')
     end
 
     # --- safe_eval --------------------------------------------------------
@@ -385,9 +404,15 @@ module ReentrantSketchup
           model.commit_operation
           @open_operations -= 1 if @open_operations.positive?
         end
+        result_str =
+          begin
+            raw.inspect
+          rescue StandardError => e
+            "<inspect failed: #{e.class}: #{e.message}>"
+          end
         {
           status:       'ok',
-          result:       truncate_for_transport(raw.to_s),
+          result:       truncate_for_transport(result_str),
           result_class: raw.class.name,
           elapsed_ms:   ((Time.now - t0) * 1000).to_i,
           entity_count: (model ? model.entities.count : nil),
@@ -436,18 +461,39 @@ module ReentrantSketchup
 
       model = Sketchup.active_model
       model.start_operation('MCP Create Box', true)
-      group = model.active_entities.add_group
-      pts = [
-        [x, y, z],
-        [x + w, y, z],
-        [x + w, y + d, z],
-        [x, y + d, z]
-      ]
-      face = group.entities.add_face(pts)
-      face.reverse! if face.normal.z < 0
-      face.pushpull(h)
-      model.commit_operation
-      "Created box at [#{x}, #{y}, #{z}] size #{w}x#{d}x#{h}"
+      @open_operations += 1
+      began_op = true
+      begin
+        group = model.active_entities.add_group
+        pts = [
+          [x, y, z],
+          [x + w, y, z],
+          [x + w, y + d, z],
+          [x, y + d, z]
+        ]
+        face = group.entities.add_face(pts)
+        face.reverse! if face.normal.z < 0
+        face.pushpull(h)
+        model.commit_operation
+        @open_operations -= 1 if @open_operations.positive?
+        began_op = false
+        {
+          status:  'ok',
+          message: "Created box at [#{x}, #{y}, #{z}] size #{w}x#{d}x#{h}",
+          origin:  [x, y, z],
+          size:    [w, d, h]
+        }
+      rescue StandardError => e
+        if began_op
+          begin
+            model.abort_operation
+          rescue StandardError
+            nil
+          end
+          @open_operations -= 1 if @open_operations.positive?
+        end
+        { status: 'error', error: e.class.name, message: e.message.to_s, backtrace: (e.backtrace || []).first(8) }
+      end
     end
   end
 end
