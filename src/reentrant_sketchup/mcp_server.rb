@@ -128,6 +128,20 @@ module ReentrantSketchup
         loop do
           begin
             client = @tcp_server.accept
+            # Disable Nagle + ensure no Ruby-level write buffering so the
+            # HTTP response is flushed as soon as we write it. Matters for
+            # the timeout path: once on_main_thread returns the sentinel,
+            # we want the kernel to ship the response without waiting for
+            # a second write or an ACK-pending coalesce. (Belt and braces
+            # — client.write + flush should be enough, but we've seen
+            # SketchUp-specific scheduler quirks that made small writes
+            # sit on the wire.)
+            begin
+              client.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
+            rescue StandardError
+              # Non-fatal on platforms that don't expose the option.
+            end
+            client.sync = true
             Thread.new(client) { |c| handle_connection(c) }
           rescue IOError, Errno::EBADF
             break
@@ -220,15 +234,23 @@ module ReentrantSketchup
 
     def write_response(client, status, body, close_conn = false)
       body = body.to_s
-      client.write("HTTP/1.1 #{status}\r\n")
-      client.write("Content-Type: application/json\r\n")
-      client.write("Content-Length: #{body.bytesize}\r\n")
-      client.write("Connection: #{close_conn ? 'close' : 'keep-alive'}\r\n")
-      client.write("Access-Control-Allow-Origin: *\r\n")
-      client.write("Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n")
-      client.write("Access-Control-Allow-Headers: Content-Type, Mcp-Session-Id, Accept\r\n")
-      client.write("\r\n")
-      client.write(body) unless body.empty?
+      # Build the full response as one string and emit it in a single
+      # client.write. Invariant: nothing between the caller's decision to
+      # respond and this write touches the main thread or blocks on the
+      # cv — a timeout payload must reach the wire without waiting for
+      # the still-running Ruby eval to finish. See also: TCP_NODELAY in
+      # start(), which prevents the kernel from coalescing this write
+      # with anything else.
+      response = +"HTTP/1.1 #{status}\r\n" \
+                 "Content-Type: application/json\r\n" \
+                 "Content-Length: #{body.bytesize}\r\n" \
+                 "Connection: #{close_conn ? 'close' : 'keep-alive'}\r\n" \
+                 "Access-Control-Allow-Origin: *\r\n" \
+                 "Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n" \
+                 "Access-Control-Allow-Headers: Content-Type, Mcp-Session-Id, Accept\r\n" \
+                 "\r\n"
+      response << body unless body.empty?
+      client.write(response)
       client.flush
     end
 

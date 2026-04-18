@@ -387,6 +387,93 @@ test 'tools/call: probe with default args uses snapshot path' do
   eq!(parsed['source'], 'snapshot')
 end
 
+# --- End-to-end timeout delivery (real TCP socket) ---------------------
+#
+# Regression test for the "timeout detected but response not flushed for
+# ~10s" issue. Invariant: once on_main_thread returns the sentinel, the
+# HTTP response must reach the wire within a small epsilon of timeout_s,
+# with NO further wait on the main-thread pump. Uses keep-alive because
+# that is what a real MCP client opens.
+
+require 'socket'
+
+puts 'e2e timeout delivery'
+
+def open_server_for_e2e
+  port = 3636 + rand(1000)
+  S.start(port: port)
+  sleep 0.1
+  port
+end
+
+def send_rpc(sock, id, method, params)
+  body = { jsonrpc: '2.0', id: id, method: method, params: params }.to_json
+  req = +"POST /mcp HTTP/1.1\r\n" \
+        "Host: 127.0.0.1\r\n" \
+        "Content-Type: application/json\r\n" \
+        "Content-Length: #{body.bytesize}\r\n" \
+        "Connection: keep-alive\r\n\r\n"
+  req << body
+  t0 = Time.now
+  sock.write(req)
+  sock.gets  # status line
+  headers = {}
+  while (line = sock.gets) && line != "\r\n"
+    k, v = line.chomp.split(': ', 2)
+    headers[k.downcase] = v if k && v
+  end
+  content_length = headers['content-length'].to_i
+  b = content_length.positive? ? sock.read(content_length) : ''
+  [((Time.now - t0) * 1000).to_i, JSON.parse(b)]
+end
+
+e2e_pump = Thread.new { loop { S.pump_queue; sleep 0.05 } }
+e2e_port = open_server_for_e2e
+
+test 'execute_ruby timeout reaches the wire within timeout_s + 500ms (keep-alive, pump blocked in sleep)' do
+  sock = TCPSocket.new('127.0.0.1', e2e_port)
+  begin
+    # Warm up the connection (avoids counting connect + initialize in
+    # the measurement).
+    send_rpc(sock, 1, 'initialize',
+      protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '0' })
+
+    wall_ms, resp = send_rpc(sock, 2, 'tools/call',
+      name: 'execute_ruby', arguments: { code: 'sleep 10', timeout_s: 2 })
+    payload = JSON.parse(resp['result']['content'][0]['text'])
+    eq!(payload['status'], 'timeout')
+    eq!(resp['result']['isError'], true)
+    raise "wall_ms too slow: #{wall_ms}ms (expected < 2500)" if wall_ms > 2500
+    raise "wall_ms impossible: #{wall_ms}ms" if wall_ms < 1800
+    raise "payload elapsed_ms too slow: #{payload['elapsed_ms']}ms" if payload['elapsed_ms'].to_i > 2500
+  ensure
+    sock.close
+  end
+end
+
+test 'probe on the same keep-alive socket stays instant while pump is still blocked' do
+  sock = TCPSocket.new('127.0.0.1', e2e_port)
+  begin
+    send_rpc(sock, 1, 'initialize',
+      protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '0' })
+    # Fire a long eval with a short timeout — we don't care about its
+    # response here, only that the pump is occupied while we measure the
+    # probe round-trip behind it.
+    send_rpc(sock, 2, 'tools/call',
+      name: 'execute_ruby', arguments: { code: 'sleep 10', timeout_s: 1 })
+    wall_ms, resp = send_rpc(sock, 3, 'tools/call',
+      name: 'probe', arguments: {})
+    payload = JSON.parse(resp['result']['content'][0]['text'])
+    eq!(payload['source'], 'snapshot')
+    raise "probe slow with pump blocked: #{wall_ms}ms" if wall_ms > 100
+  ensure
+    sock.close
+  end
+end
+
+S.stop
+e2e_pump.kill
+
 # --- Summary ------------------------------------------------------------
 
 puts
