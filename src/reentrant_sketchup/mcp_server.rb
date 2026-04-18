@@ -14,6 +14,7 @@ module ReentrantSketchup
   module McpServer
     DEFAULT_PORT = 3636
     PROTOCOL_VERSION = '2025-06-18'
+    MAX_RESULT_BYTES = 4096
 
     @server_thread = nil
     @tcp_server = nil
@@ -21,6 +22,7 @@ module ReentrantSketchup
     @queue = []
     @queue_mutex = Mutex.new
     @port = DEFAULT_PORT
+    @open_operations = 0
 
     TOOLS = [
       {
@@ -352,6 +354,76 @@ module ReentrantSketchup
     def tool_execute_ruby(code)
       result = eval(code, TOPLEVEL_BINDING) # rubocop:disable Security/Eval
       result.inspect
+    end
+
+    # --- safe_eval --------------------------------------------------------
+    #
+    # Hardened replacement for raw `eval`. Wraps execution in a SketchUp
+    # undo operation by default (atomic-on-error), catches every exception,
+    # and returns a structured hash the transport layer can serialize.
+    #
+    # Intentionally does NOT use `Timeout::timeout`: in SketchUp's Ruby VM
+    # the target thread is the main thread, and a timeout cannot interrupt
+    # a C-level SketchUp API call (boolean ops, entity iteration, etc.)
+    # running inside it. The server-side response-wait timeout (Step 6) is
+    # the real backstop; a `timeout` result there does not interrupt the
+    # Ruby work, which continues on the main thread.
+    #
+    # Must be called on the main thread (via on_main_thread).
+    def safe_eval(code, op_name: 'MCP Op', wrap_op: true, binding_obj: TOPLEVEL_BINDING)
+      t0 = Time.now
+      model = Sketchup.active_model
+      began_op = false
+      begin
+        if wrap_op && model
+          model.start_operation(op_name, true)
+          began_op = true
+          @open_operations += 1
+        end
+        raw = eval(code, binding_obj) # rubocop:disable Security/Eval
+        if began_op
+          model.commit_operation
+          @open_operations -= 1 if @open_operations.positive?
+        end
+        {
+          status:       'ok',
+          result:       truncate_for_transport(raw.to_s),
+          result_class: raw.class.name,
+          elapsed_ms:   ((Time.now - t0) * 1000).to_i,
+          entity_count: (model ? model.entities.count : nil),
+          op_name:      op_name
+        }
+      rescue ScriptError, StandardError => e
+        if began_op
+          begin
+            model.abort_operation
+          rescue StandardError
+            nil
+          end
+          @open_operations -= 1 if @open_operations.positive?
+        end
+        {
+          status:     'error',
+          error:      e.class.name,
+          message:    e.message.to_s,
+          backtrace:  (e.backtrace || []).first(8),
+          elapsed_ms: ((Time.now - t0) * 1000).to_i,
+          op_name:    op_name
+        }
+      end
+    end
+
+    def truncate_for_transport(str, limit = MAX_RESULT_BYTES)
+      s = str.to_s
+      s = s.dup.force_encoding('UTF-8').scrub('?') unless s.valid_encoding?
+      return s if s.bytesize <= limit
+      total = s.bytesize
+      head = s.byteslice(0, limit).force_encoding('UTF-8').scrub('?')
+      "#{head}...[truncated, #{total} total bytes]"
+    end
+
+    def open_operations_count
+      @open_operations
     end
 
     def tool_create_box(args)
