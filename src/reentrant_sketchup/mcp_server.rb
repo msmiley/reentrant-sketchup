@@ -41,17 +41,17 @@ module ReentrantSketchup
     TOOLS = [
       {
         name: 'get_selection',
-        description: 'Get info about the current SketchUp selection (count, types).',
+        description: 'Current SketchUp selection. Response: {status, count, types}.',
         inputSchema: { type: 'object', properties: {}, required: [] }
       },
       {
         name: 'get_model_info',
-        description: 'Get info about the active SketchUp model (path, entity counts).',
+        description: 'Active model summary. Response: {status, title, path, entities, definitions, materials, layers}. For a diagnostic snapshot that works even when execute_ruby is stuck, prefer probe.',
         inputSchema: { type: 'object', properties: {}, required: [] }
       },
       {
         name: 'list_entities',
-        description: 'List entities in the active context with their types.',
+        description: 'List entities in the active context with their types. Response: {status, entities:[{type, typename}], total}.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -61,7 +61,7 @@ module ReentrantSketchup
       },
       {
         name: 'execute_ruby',
-        description: 'Execute arbitrary Ruby code in the SketchUp context. Returns a structured JSON result (status/result/elapsed_ms/entity_count). Atomic by default — wraps execution in a SketchUp undo operation and aborts on any exception.',
+        description: 'Execute Ruby in the SketchUp context. Atomic by default — wraps execution in a SketchUp undo operation and aborts on any exception. Response on success: {status:"ok", result, result_class, elapsed_ms, entity_count, op_name}. On raise: {status:"error", error, message, backtrace, elapsed_ms, op_name}. On server-side timeout (client exceeded timeout_s): {status:"timeout", message, elapsed_ms, timeout_s, tool} — the Ruby work may still be running; call probe to verify state before retrying.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -75,7 +75,7 @@ module ReentrantSketchup
       },
       {
         name: 'execute_ruby_file',
-        description: 'Read a Ruby script from an absolute path on the SketchUp host and run it through the same hardened path as execute_ruby. Useful for scripts too large for the transport and for debugging (the file stays on disk).',
+        description: 'Read a Ruby script from an absolute path on the SketchUp host and run it through the same hardened path as execute_ruby. Useful for scripts too large for the transport and for debugging (the file stays on disk). Response shape matches execute_ruby plus {source_file, source_bytes}. Refuses relative paths and files over 1 MB.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -89,7 +89,7 @@ module ReentrantSketchup
       },
       {
         name: 'probe',
-        description: 'Fast diagnostic read of SketchUp state (title, path, entity counts, active context, open_operations). Reads a snapshot cache by default — safe to call even when execute_ruby is stuck. Pass live=true to force a fresh main-thread read.',
+        description: 'Fast diagnostic read of SketchUp state. Reads a main-thread-refreshed snapshot cache by default, so it responds immediately even when execute_ruby is stuck (a modal dialog, a runaway loop). Pass live=true to route through the main thread for a ground-truth read (pays the wait). Response: {status, title, path, entity_count, active_context, definitions, materials, layers, open_operations, extension_version, fetched_at_ms, snapshot_age_ms, source:"snapshot"|"live"}. A growing snapshot_age_ms is itself the diagnostic that the main thread is blocked.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -99,7 +99,7 @@ module ReentrantSketchup
       },
       {
         name: 'create_box',
-        description: 'Create a rectangular solid at the given origin with given dimensions (inches).',
+        description: 'Create a rectangular solid at the given origin with given dimensions (inches). Atomic (wrapped in a SketchUp undo operation; aborted on error). Response: {status, message, origin, size} on success; standard error shape on failure.',
         inputSchema: {
           type: 'object',
           properties: {
