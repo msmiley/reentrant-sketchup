@@ -41,6 +41,12 @@ server observable and responsive even when the Ruby VM is blocked.
   time and tool name; the underlying Ruby work continues (SketchUp cannot
   safely interrupt it). Override per-call with `timeout_s`; clamped to
   `[1, 600]`.
+- HTTP write path coalesced to a single `client.write` and `TCP_NODELAY` set
+  on accepted sockets, so a timeout response reaches the wire immediately
+  without waiting for Nagle or for the still-running main-thread eval.
+  End-to-end test (`test/mcp_server_test.rb`) asserts the timeout response
+  arrives within `timeout_s + 500 ms` over keep-alive while the pump is
+  blocked in `sleep`.
 
 ### Backward compatibility
 
