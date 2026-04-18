@@ -17,6 +17,14 @@ module ReentrantSketchup
     PROTOCOL_VERSION = '2025-06-18'
     MAX_RESULT_BYTES = 4096
     MAX_SCRIPT_FILE_BYTES = 1 * 1024 * 1024  # 1 MB
+    DEFAULT_TIMEOUT_S = 30
+
+    # Sentinel returned by on_main_thread when the wait deadline is reached.
+    # Does not interrupt the queued lambda — it will still run when the main
+    # thread gets around to it (SketchUp can't safely interrupt Ruby running
+    # a C-level API call). The caller handles this sentinel and returns
+    # status: 'timeout' to the MCP client.
+    MAIN_THREAD_TIMEOUT = :__mcp_main_thread_timeout__
 
     @server_thread = nil
     @tcp_server = nil
@@ -275,6 +283,8 @@ module ReentrantSketchup
       when 'tools/call'
         name = params['name']
         args = params['arguments'] || {}
+        timeout_s = tool_timeout_for(args)
+        t0 = Time.now
         payload =
           begin
             if name == 'probe' && !args['live']
@@ -283,7 +293,18 @@ module ReentrantSketchup
               # stuck on the main thread.
               read_snapshot_for_probe
             else
-              on_main_thread { call_tool(name, args) }
+              ret = on_main_thread(timeout_s: timeout_s) { call_tool(name, args) }
+              if ret == MAIN_THREAD_TIMEOUT
+                {
+                  status:     'timeout',
+                  message:    "Main-thread response-wait exceeded #{timeout_s}s. The Ruby code may still be running; call 'probe' to inspect state before retrying.",
+                  elapsed_ms: ((Time.now - t0) * 1000).to_i,
+                  timeout_s:  timeout_s,
+                  tool:       name
+                }
+              else
+                ret
+              end
             end
           rescue StandardError => e
             {
@@ -315,8 +336,13 @@ module ReentrantSketchup
 
     # --- Main-thread marshalling --------------------------------------------
 
-    # Enqueue a block to run on the main thread, block until it completes.
-    def on_main_thread(&block)
+    # Enqueue a block to run on the main thread and wait for its result.
+    # Returns the block's value, or MAIN_THREAD_TIMEOUT if the deadline
+    # passes first. Does NOT cancel the queued lambda on timeout — the
+    # Ruby VM is single-threaded and cannot safely interrupt in-flight
+    # SketchUp API calls. Callers should treat a timeout as "the work
+    # may still land" and use probe to verify state before retrying.
+    def on_main_thread(timeout_s: DEFAULT_TIMEOUT_S, &block)
       mutex = Mutex.new
       cv = ConditionVariable.new
       result = { done: false, value: nil, error: nil }
@@ -335,12 +361,17 @@ module ReentrantSketchup
         end
       end
 
+      deadline = Time.now + timeout_s.to_f
       mutex.synchronize do
-        cv.wait(mutex, 30) until result[:done]
+        until result[:done]
+          remaining = deadline - Time.now
+          break if remaining <= 0
+          cv.wait(mutex, remaining)
+        end
       end
 
+      return MAIN_THREAD_TIMEOUT unless result[:done]
       raise result[:error] if result[:error]
-      raise 'Main thread did not respond within 30s' unless result[:done]
       result[:value]
     end
 
@@ -456,6 +487,16 @@ module ReentrantSketchup
       else
         { status: 'error', error: 'UnknownTool', message: "Unknown tool: #{name}" }
       end
+    end
+
+    # Resolve the per-call transport timeout. Accepts args['timeout_s'];
+    # falls back to DEFAULT_TIMEOUT_S. Clamps to [1, 600] so a buggy
+    # client can't pin an HTTP worker thread forever or ship a zero.
+    def tool_timeout_for(args)
+      raw = args['timeout_s']
+      val = raw.nil? ? DEFAULT_TIMEOUT_S : raw.to_i
+      val = DEFAULT_TIMEOUT_S if val <= 0
+      [[val, 1].max, 600].min
     end
 
     # Serialize a tool-result hash to a JSON string for the MCP text field.
