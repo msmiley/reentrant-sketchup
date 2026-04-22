@@ -5,7 +5,7 @@ require 'extensions'
 
 module ReentrantSketchup
   PLUGIN_NAME = 'Reentrant SketchUp'
-  PLUGIN_VERSION = '1.7.0'
+  PLUGIN_VERSION = '1.8.0'
   PLUGIN_DIR = File.join(File.dirname(__FILE__), 'reentrant_sketchup')
 
   extension = SketchupExtension.new(PLUGIN_NAME, File.join(PLUGIN_DIR, 'main'))
