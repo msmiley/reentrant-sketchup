@@ -34,8 +34,9 @@ module ReentrantSketchup
     cam_sub = UI.menu('Camera').add_submenu(PLUGIN_NAME)
     cam_sub.add_item('Zoom Selection') { CameraTools.zoom_selection }
 
-    # -- Context menu: Rotate 90° & Duplicate --
+    # -- Context menu: Rotate 90°, Align & Duplicate --
     RotationTools.register_context_menu
+    AlignTools.register_context_menu
     DuplicateTools.register_context_menu
 
     # -- Extensions menu: MCP server & Update check --
