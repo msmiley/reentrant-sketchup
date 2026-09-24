@@ -169,3 +169,62 @@ tools/call execute_ruby { "code": "'x' * 50_000" }
 ```
 
 `result` is clipped to ~4 KB + a `...[truncated, 50002 total bytes]` suffix.
+
+## 13. Trim Multiple (Solid Tools, SketchUp Pro)
+
+Solid Tools only exist inside SketchUp Pro's Ruby VM, so this one cannot be
+covered by the automated suite. Paste the setup into the Ruby Console (or send
+it through `execute_ruby`) — it builds one tall cutter box and three target
+boxes that each overlap it:
+
+```ruby
+m = Sketchup.active_model
+m.start_operation('trim fixture', true)
+box = lambda do |name, origin, size|
+  g = m.active_entities.add_group
+  pts = [
+    origin,
+    origin.clone.offset([size[0], 0, 0]),
+    origin.clone.offset([size[0], size[1], 0]),
+    origin.clone.offset([0, size[1], 0])
+  ]
+  face = g.entities.add_face(pts)
+  face.pushpull(-size[2])   # negative so the normal ends up outward
+  g.name = name
+  g
+end
+cutter = box.call('cutter', Geom::Point3d.new(0, 0, 0), [10, 60, 40])
+targets = (1..3).map do |i|
+  box.call("target#{i}", Geom::Point3d.new(-5, (i - 1) * 20, 0), [30, 10, 10])
+end
+m.commit_operation
+m.selection.clear
+m.selection.add([cutter] + targets)   # cutter first — it is the cutting tool
+```
+
+Then run **Edit > Reentrant SketchUp > Trim Multiple** and check:
+
+- Console prints `Trimmed 3 solids with 'cutter'` — the count must be 3, not 1.
+- All three targets lose the volume that overlapped the cutter; each is still
+  a solid (Entity Info shows a volume).
+- `cutter` is unchanged — same size, same volume as before.
+- Selection afterwards holds the cutter plus the three trimmed groups.
+- **Edit > Undo** once restores all four boxes to their pre-trim state.
+
+Verify the direction assumption directly, since the Solid Tools docs describe
+it two different ways (`a.trim(b)` should trim **b** and leave `a` alone):
+
+```ruby
+m = Sketchup.active_model
+a, b = m.selection.to_a          # select exactly two overlapping solid groups
+before = [a.volume, b.volume]
+result = a.trim(b)
+[before, a.valid? && a.volume, result && result.volume, b.valid?]
+```
+
+Expect `a` still valid at its original volume, `b.valid?` false (erased and
+replaced), and `result.volume` smaller than `before[1]`. If that comes back
+inverted, the receiver/argument order in `GroupTools.trim_multiple` has to flip.
+
+Non-Pro check: on SketchUp Make the menu item should print
+`Trim Multiple needs SketchUp Pro (Solid Tools)` and change nothing.

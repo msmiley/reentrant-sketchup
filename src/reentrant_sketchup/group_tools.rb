@@ -87,16 +87,52 @@ module ReentrantSketchup
       puts "Made #{components.length} components independently unique"
     end
 
-    # Trim multiple selected solids using the first selected solid as the
-    # cutting tool. The cutting tool is preserved; the intersecting volume is
-    # removed from every other selected solid.
+    # A group or component instance counts as a solid when every edge in its
+    # definition is bounded by exactly two faces. Group#manifold? is deprecated
+    # (it checks the definition, not the instance) and ComponentInstance has no
+    # #manifold? at all, so go through the definition — using
+    # ComponentDefinition#manifold? where the running SketchUp offers it and
+    # falling back to the edge test where it does not.
+    def self.solid?(entity)
+      return false unless entity.is_a?(Sketchup::Group) || entity.is_a?(Sketchup::ComponentInstance)
+      return false unless entity.valid? && entity.respond_to?(:definition)
+
+      definition = entity.definition
+      return false if definition.nil?
+      return definition.manifold? if definition.respond_to?(:manifold?)
+
+      entities = definition.entities
+      return false if entities.grep(Sketchup::Face).empty?
+
+      entities.grep(Sketchup::Edge).all? { |edge| edge.faces.length == 2 }
+    end
+
+    # Human-readable label for a group or instance, for console messages.
+    def self.display_name(entity)
+      name = entity.name.to_s
+      return name unless name.empty?
+      return entity.definition.name if entity.respond_to?(:definition)
+
+      entity.to_s
+    end
+
+    # Trim every other selected solid with the first selected solid. The
+    # cutting tool is preserved; the intersecting volume is removed from every
+    # other selected solid.
+    #
+    # The Solid Tools API reads backwards here: `a.trim(b)` trims *b*, erases
+    # the original b, and returns a brand new group holding the trimmed result;
+    # `a` — the cutting solid — is left untouched. So the cutter has to be the
+    # receiver and each target the argument. Failure is reported by a nil
+    # return value rather than an exception.
     # Requires SketchUp Pro (Solid Tools).
     def self.trim_multiple
       model = Sketchup.active_model
-      solids = model.selection.select do |e|
-        (e.is_a?(Sketchup::Group) || e.is_a?(Sketchup::ComponentInstance)) &&
-          e.manifold?
+      unless Sketchup.is_pro?
+        return puts('Trim Multiple needs SketchUp Pro (Solid Tools)')
       end
+
+      solids = model.selection.select { |e| solid?(e) }
 
       if solids.length < 2
         return puts('Select at least 2 solid groups/components (first = cutter)')
@@ -104,19 +140,46 @@ module ReentrantSketchup
 
       cutter = solids.first
       targets = solids[1..]
+      cutter_name = display_name(cutter)
 
       model.start_operation('Trim Multiple', true)
-      trimmed = 0
+      results = []
+      failed = 0
       targets.each do |target|
+        unless cutter.valid?
+          puts "Cutter '#{cutter_name}' was consumed — stopping"
+          break
+        end
+        next unless target.valid?
+
+        target_name = display_name(target)
         begin
-          target.trim(cutter)
-          trimmed += 1
-        rescue ArgumentError => e
-          puts "Skipping #{target}: #{e.message}"
+          # Returns the new trimmed group, or nil if the pair is not trimmable.
+          result = cutter.trim(target)
+          if result
+            results << result
+          else
+            failed += 1
+            puts "Trim failed on '#{target_name}' (no intersection, or not a solid)"
+          end
+        rescue StandardError => e
+          failed += 1
+          puts "Skipping '#{target_name}': #{e.class}: #{e.message}"
         end
       end
+
+      if results.empty?
+        model.abort_operation
+        return puts("Nothing trimmed with '#{cutter_name}' (#{failed} failed)")
+      end
+
       model.commit_operation
-      puts "Trimmed #{trimmed} solids with '#{cutter.name}'"
+
+      model.selection.clear
+      model.selection.add(([cutter] + results).select(&:valid?))
+      suffix = failed.zero? ? '' : " (#{failed} failed)"
+      puts "Trimmed #{results.length} solids with '#{cutter_name}'#{suffix}"
+      results
     end
 
     # Remove all empty groups and component instances from the model.

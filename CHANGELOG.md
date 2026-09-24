@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.2
+
+### Fixed
+- Fix Trim Multiple and document manual testing
+
+
 ## 1.7.0 — MCP reliability pass
 
 `execute_ruby` no longer hangs clients for ~4 minutes when things go wrong. It

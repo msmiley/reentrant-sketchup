@@ -47,6 +47,8 @@ ln -s /path/to/reentrant-sketchup/src/reentrant_sketchup \
 | Explode Selection | Explode groups/components one level |
 | Group to Component | Convert selected groups into component definitions |
 | Lock / Unlock Selection | Lock or unlock selected groups and components |
+| Make Unique Each | Give each selected instance its own unique definition |
+| Trim Multiple | Trim every selected solid with the first selected solid (Pro only) |
 | Purge Empty Groups | Remove all empty groups and components |
 
 ### Layer/Tag Tools
