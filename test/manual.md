@@ -202,8 +202,13 @@ m.selection.clear
 m.selection.add([cutter] + targets)   # cutter first — it is the cutting tool
 ```
 
-Then run **Edit > Reentrant SketchUp > Trim Multiple** and check:
+Select the three targets (not the cutter), run **Edit > Reentrant SketchUp >
+Trim Multiple**, then click `cutter` in the viewport. Check:
 
+- While the tool is active the status bar prompts for the cutter, and hovering
+  a solid draws a red box around it and names it in the status bar.
+- Clicking empty space or a non-solid keeps the tool active; Esc cancels and
+  changes nothing.
 - Console prints `Trimmed 3 solids with 'cutter'` — the count must be 3, not 1.
 - All three targets lose the volume that overlapped the cutter; each is still
   a solid (Entity Info shows a volume).
@@ -224,7 +229,7 @@ result = a.trim(b)
 
 Expect `a` still valid at its original volume, `b.valid?` false (erased and
 replaced), and `result.volume` smaller than `before[1]`. If that comes back
-inverted, the receiver/argument order in `GroupTools.trim_multiple` has to flip.
+inverted, the receiver/argument order in `GroupTools.trim_with` has to flip.
 
 Non-Pro check: on SketchUp Make the menu item should print
 `Trim Multiple needs SketchUp Pro (Solid Tools)` and change nothing.

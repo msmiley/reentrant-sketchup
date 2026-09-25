@@ -116,15 +116,10 @@ module ReentrantSketchup
       entity.to_s
     end
 
-    # Trim every other selected solid with the first selected solid. The
-    # cutting tool is preserved; the intersecting volume is removed from every
-    # other selected solid.
-    #
-    # The Solid Tools API reads backwards here: `a.trim(b)` trims *b*, erases
-    # the original b, and returns a brand new group holding the trimmed result;
-    # `a` — the cutting solid — is left untouched. So the cutter has to be the
-    # receiver and each target the argument. Failure is reported by a nil
-    # return value rather than an exception.
+    # Trim the selected solids with a cutter picked afterwards. Selection order
+    # is not reliable in SketchUp (window selections and re-clicks reorder it),
+    # so instead of treating the "first" selected solid as the cutter, select
+    # the targets, run the command, then click the cutter in the viewport.
     # Requires SketchUp Pro (Solid Tools).
     def self.trim_multiple
       model = Sketchup.active_model
@@ -132,14 +127,25 @@ module ReentrantSketchup
         return puts('Trim Multiple needs SketchUp Pro (Solid Tools)')
       end
 
-      solids = model.selection.select { |e| solid?(e) }
+      targets = model.selection.select { |e| solid?(e) }
+      return puts('Select the solid groups/components to trim first') if targets.empty?
 
-      if solids.length < 2
-        return puts('Select at least 2 solid groups/components (first = cutter)')
-      end
+      model.select_tool(TrimCutterTool.new(targets))
+    end
 
-      cutter = solids.first
-      targets = solids[1..]
+    # Remove the volume of `cutter` from every solid in `targets`. The cutter
+    # is preserved.
+    #
+    # The Solid Tools API reads backwards here: `a.trim(b)` trims *b*, erases
+    # the original b, and returns a brand new group holding the trimmed result;
+    # `a` — the cutting solid — is left untouched. So the cutter has to be the
+    # receiver and each target the argument. Failure is reported by a nil
+    # return value rather than an exception.
+    def self.trim_with(cutter, targets)
+      model = Sketchup.active_model
+      targets = targets.reject { |t| t == cutter }
+      return puts('Nothing to trim') if targets.empty?
+
       cutter_name = display_name(cutter)
 
       model.start_operation('Trim Multiple', true)
@@ -180,6 +186,74 @@ module ReentrantSketchup
       suffix = failed.zero? ? '' : " (#{failed} failed)"
       puts "Trimmed #{results.length} solids with '#{cutter_name}'#{suffix}"
       results
+    end
+
+    # Interactive step of Trim Multiple: highlights the solid under the cursor
+    # and trims the stored targets with whichever solid is clicked.
+    class TrimCutterTool
+      PROMPT = 'Trim Multiple: click the cutter solid (Esc to cancel)'
+
+      def initialize(targets)
+        @targets = targets
+        @hover = nil
+      end
+
+      def activate
+        Sketchup.status_text = "#{PROMPT} — #{@targets.length} target(s) selected"
+      end
+
+      def deactivate(view)
+        view.invalidate
+      end
+
+      def onCancel(_reason, _view)
+        puts 'Trim Multiple cancelled'
+        Sketchup.active_model.select_tool(nil)
+      end
+
+      def onMouseMove(_flags, x, y, view)
+        hover = pick_solid(view, x, y)
+        return if hover == @hover
+
+        @hover = hover
+        Sketchup.status_text = hover ? "Cutter: #{GroupTools.display_name(hover)}" : PROMPT
+        view.invalidate
+      end
+
+      def onLButtonDown(_flags, x, y, view)
+        cutter = pick_solid(view, x, y)
+        unless cutter
+          Sketchup.status_text = "Not a solid — #{PROMPT}"
+          return
+        end
+
+        @targets.select!(&:valid?)
+        Sketchup.active_model.select_tool(nil)
+        GroupTools.trim_with(cutter, @targets)
+      end
+
+      def draw(view)
+        return unless @hover&.valid?
+
+        bb = @hover.bounds
+        tr = Sketchup.active_model.edit_transform
+        pts = (0..7).map { |i| bb.corner(i).transform(tr) }
+        view.drawing_color = 'red'
+        view.line_width = 3
+        # Corner indices: bit 0 = x, bit 1 = y, bit 2 = z.
+        edges = [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3],
+                 [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]]
+        view.draw(GL_LINES, edges.flatten.map { |i| pts[i] })
+      end
+
+      private
+
+      def pick_solid(view, x, y)
+        ph = view.pick_helper
+        ph.do_pick(x, y)
+        entity = ph.best_picked
+        GroupTools.solid?(entity) ? entity : nil
+      end
     end
 
     # Remove all empty groups and component instances from the model.

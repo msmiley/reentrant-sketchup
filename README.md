@@ -48,7 +48,7 @@ ln -s /path/to/reentrant-sketchup/src/reentrant_sketchup \
 | Group to Component | Convert selected groups into component definitions |
 | Lock / Unlock Selection | Lock or unlock selected groups and components |
 | Make Unique Each | Give each selected instance its own unique definition |
-| Trim Multiple | Trim every selected solid with the first selected solid (Pro only) |
+| Trim Multiple | Select the solids to trim, run the command, then click the cutter solid (Pro only) |
 | Purge Empty Groups | Remove all empty groups and components |
 
 ### Layer/Tag Tools

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.4
+
+### Changed
+- Trim Multiple no longer relies on selection order: select the targets, run
+  the command, then click the cutter in the viewport (Esc cancels)
+
 ## 1.8.3
 
 ### Fixed
